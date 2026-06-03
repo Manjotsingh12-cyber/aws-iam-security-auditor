@@ -1,0 +1,180 @@
+import boto3
+import json
+import datetime
+
+iam = boto3.client('iam')
+s3 = boto3.client('s3')
+sns = boto3.client('sns')
+
+RESULTS_BUCKET = 'bucket-for-result-of-iam-checker'
+SNS_TOPIC_ARN = 'arn:aws:sns:ap-south-1:187445349407:iam-auditor-alerts'
+
+
+# ─── SNS ALERT ───────────────────────────────────────────────────
+
+def send_alert(high_findings):
+    message = "HIGH RISK findings detected:\n\n"
+    for item in high_findings:
+        message += f"- {item['name']} ({item['type']}): {', '.join(item['findings'])}\n"
+
+    sns.publish(
+        TopicArn=SNS_TOPIC_ARN,
+        Subject="IAM Auditor Alert - HIGH Risk Found",
+        Message=message
+    )
+
+
+# ─── IAM USER SCANNER ────────────────────────────────────────────
+
+def scan_iam_users():
+    users = iam.list_users()['Users']
+    results = []
+
+    for user in users:
+        username = user['UserName']
+        findings = []
+        score = 0
+
+        # Check 1: MFA enabled?
+        mfa = iam.list_mfa_devices(UserName=username)['MFADevices']
+        if not mfa:
+            findings.append("No MFA enabled")
+            score += 30
+
+        # Check 2: Access key older than 90 days?
+        keys = iam.list_access_keys(UserName=username)['AccessKeyMetadata']
+        for key in keys:
+            created = key['CreateDate'].replace(tzinfo=None)
+            age = (datetime.datetime.now() - created).days
+            if age > 90:
+                findings.append(f"Access key older than {age} days")
+                score += 20
+
+        # Check 3: Admin policy attached?
+        policies = iam.list_attached_user_policies(UserName=username)['AttachedPolicies']
+        for policy in policies:
+            if 'Admin' in policy['PolicyName']:
+                findings.append("Admin policy attached")
+                score += 40
+
+        if score >= 50:
+            risk = "HIGH"
+        elif score >= 20:
+            risk = "MEDIUM"
+        else:
+            risk = "LOW"
+
+        results.append({
+            "type": "IAM_USER",
+            "name": username,
+            "risk": risk,
+            "score": score,
+            "findings": findings
+        })
+
+    return results
+
+
+# ─── S3 BUCKET SCANNER ───────────────────────────────────────────
+
+def scan_s3_buckets():
+    buckets = s3.list_buckets()['Buckets']
+    results = []
+
+    for bucket in buckets:
+        name = bucket['Name']
+        findings = []
+        score = 0
+
+        # Check 1: Public ACL?
+        try:
+            acl = s3.get_bucket_acl(Bucket=name)
+            for grant in acl['Grants']:
+                grantee = str(grant.get('Grantee', ''))
+                if 'AllUsers' in grantee:
+                    findings.append("Bucket is publicly accessible (AllUsers)")
+                    score += 50
+                elif 'AuthenticatedUsers' in grantee:
+                    findings.append("Bucket accessible to all authenticated AWS users")
+                    score += 30
+        except Exception as e:
+            findings.append(f"Could not read ACL: {str(e)}")
+
+        # Check 2: Public access block disabled?
+        try:
+            pub = s3.get_public_access_block(Bucket=name)['PublicAccessBlockConfiguration']
+            if not pub.get('BlockPublicAcls') or not pub.get('BlockPublicPolicy'):
+                findings.append("Public access block is not fully enabled")
+                score += 20
+        except Exception:
+            findings.append("No public access block configured")
+            score += 20
+
+        # Check 3: Bucket policy allows public?
+        try:
+            policy = s3.get_bucket_policy(Bucket=name)['Policy']
+            if '"Principal": "*"' in policy or '"Principal":"*"' in policy:
+                findings.append("Bucket policy allows public access (*)")
+                score += 40
+        except Exception as e:
+            if 'NoSuchBucketPolicy' in str(e):
+                pass
+
+        if score >= 50:
+            risk = "HIGH"
+        elif score >= 20:
+            risk = "MEDIUM"
+        else:
+            risk = "LOW"
+
+        results.append({
+            "type": "S3_BUCKET",
+            "name": name,
+            "risk": risk,
+            "score": score,
+            "findings": findings
+        })
+
+    return results
+
+
+# ─── MAIN HANDLER ────────────────────────────────────────────────
+
+def lambda_handler(event, context):
+    print("Starting security scan...")
+
+    iam_results = scan_iam_users()
+    s3_results = scan_s3_buckets()
+
+    all_results = iam_results + s3_results
+
+    high   = len([r for r in all_results if r['risk'] == 'HIGH'])
+    medium = len([r for r in all_results if r['risk'] == 'MEDIUM'])
+    low    = len([r for r in all_results if r['risk'] == 'LOW'])
+
+    output = {
+        "scan_time": datetime.datetime.now().isoformat(),
+        "summary": {
+            "total": len(all_results),
+            "high": high,
+            "medium": medium,
+            "low": low
+        },
+        "results": all_results
+    }
+
+    # Save to S3
+    s3.put_object(
+        Bucket=RESULTS_BUCKET,
+        Key='scan-results.json',
+        Body=json.dumps(output, indent=2),
+        ContentType='application/json'
+    )
+
+    # Send SNS alert if HIGH risk found
+    high_findings = [r for r in all_results if r['risk'] == 'HIGH']
+    if high_findings:
+        send_alert(high_findings)
+
+    print(f"Scan done. HIGH: {high}, MEDIUM: {medium}, LOW: {low}")
+    return output
