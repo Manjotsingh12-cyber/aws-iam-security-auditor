@@ -1,0 +1,67 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>IAM Auditor Dashboard</title>
+    <style>
+        body { font-family: Arial, sans-serif; padding: 30px; background: #f4f4f4; }
+        h1 { color: #333; }
+        .summary { display: flex; gap: 20px; margin-bottom: 30px; }
+        .card { background: white; padding: 20px; border-radius: 8px; text-align: center; width: 150px; }
+        .card h2 { margin: 0; font-size: 36px; }
+        .card p { margin: 5px 0 0; color: #666; }
+        .HIGH h2 { color: #e74c3c; }
+        .MEDIUM h2 { color: #f39c12; }
+        .LOW h2 { color: #27ae60; }
+        table { width: 100%; border-collapse: collapse; background: white; border-radius: 8px; overflow: hidden; }
+        th { background: #333; color: white; padding: 12px; text-align: left; }
+        td { padding: 12px; border-bottom: 1px solid #eee; }
+        .badge { padding: 4px 10px; border-radius: 4px; color: white; font-weight: bold; }
+        .HIGH .badge { background: #e74c3c; }
+        .MEDIUM .badge { background: #f39c12; }
+        .LOW .badge { background: #27ae60; }
+        .scan-time { color: #888; margin-bottom: 20px; }
+    </style>
+</head>
+<body>
+    <h1>IAM Auditor Dashboard</h1>
+    <p class="scan-time">Last scan: {{ data.scan_time }}</p>
+
+    <div class="summary">
+        <div class="card HIGH">
+            <h2>{{ data.summary.high }}</h2>
+            <p>HIGH</p>
+        </div>
+        <div class="card MEDIUM">
+            <h2>{{ data.summary.medium }}</h2>
+            <p>MEDIUM</p>
+        </div>
+        <div class="card LOW">
+            <h2>{{ data.summary.low }}</h2>
+            <p>LOW</p>
+        </div>
+        <div class="card">
+            <h2>{{ data.summary.total }}</h2>
+            <p>TOTAL</p>
+        </div>
+    </div>
+
+    <table>
+        <tr>
+            <th>Name</th>
+            <th>Type</th>
+            <th>Risk</th>
+            <th>Score</th>
+            <th>Findings</th>
+        </tr>
+        {% for item in data.results %}
+        <tr class="{{ item.risk }}">
+            <td>{{ item.name }}</td>
+            <td>{{ item.type }}</td>
+            <td><span class="badge">{{ item.risk }}</span></td>
+            <td>{{ item.score }}</td>
+            <td>{{ item.findings | join(', ') }}</td>
+        </tr>
+        {% endfor %}
+    </table>
+</body>
+</html>
